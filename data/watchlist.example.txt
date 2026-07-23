@@ -1,0 +1,2 @@
+# Add one stock id per line. Used by scripts/daily_notify.py
+6217

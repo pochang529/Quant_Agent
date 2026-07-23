@@ -6,3 +6,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+data/positions.json
+data/notify_state.json
+data/watchlist.txt
