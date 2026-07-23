@@ -129,6 +129,10 @@ def main():
         disp = qc.disposition_status(sid, start, end, token, False)
         alerts.append(qc.summarize_alert(sid, latest, market_weak, disp["active"]))
 
+    # Gmail：純文字也不貼長網址，只提示看 HTML 連結文字
+    msg_gmail = qc.format_alert_message(alerts, app_url="")
+    if push.get("app_url"):
+        msg_gmail = msg_gmail.rstrip() + "\n\n觀看完整數據（請點信件中的連結）"
     msg = qc.format_alert_message(alerts, app_url=push.get("app_url", ""))
     html = qc.format_alert_html(alerts, app_url=push.get("app_url", ""))
 
@@ -158,7 +162,7 @@ def main():
             push["gmail_user"],
             push["gmail_pass"],
             push["gmail_to"],
-            msg,
+            msg_gmail,
             html=html,
         )
         results.append(info)

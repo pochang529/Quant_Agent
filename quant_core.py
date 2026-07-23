@@ -422,9 +422,8 @@ def format_alert_message(
         )
     lines.append("")
     if app_url:
+        # 純文字通道（Telegram 等）仍需網址；Gmail 另走 HTML 短連結文字
         lines.append(f"觀看完整數據：{app_url}")
-    else:
-        lines.append("觀看完整數據：請在 secrets 設定 APP_URL（Streamlit 雲端網址）")
     return "\n".join(lines)
 
 
@@ -433,18 +432,34 @@ def format_alert_html(
     title: str = "Quant_Agent 定時監測",
     app_url: str = "",
 ) -> str:
-    """HTML body for Gmail (clickable link)."""
-    plain = format_alert_message(items, title=title, app_url="")
-    parts = [f"<pre style='font-family:monospace;white-space:pre-wrap'>{_html_escape(plain)}</pre>"]
+    """Gmail HTML：只顯示可點的『觀看完整數據』，不露出長網址。"""
+    lines = [f"【{title}】{datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
+    for a in items:
+        brew = "｜醞釀" if a.get("brewing") else ""
+        disp = "｜處置中" if a.get("disp_active") else ""
+        mkt = "｜大盤弱" if a.get("market_weak") else ""
+        close_s = fmt_num(a.get("close")) if a.get("close") is not None else "—"
+        lines.append(
+            f"{a['stock_id']} 收{close_s}｜進場{a['entry']}({a['pass_count']}/3)"
+            f"｜{a['exit']}({a['x_pass']}/3)｜乖離{fmt_num(a.get('ma_gap_pct'))}%"
+            f"｜量比{fmt_num(a.get('vol_ratio'))}{brew}{disp}{mkt}"
+        )
+    body = _html_escape("\n".join(lines))
+    parts = [
+        f"<div style='font-family:Arial,sans-serif;font-size:14px;line-height:1.5'>"
+        f"<pre style='font-family:Consolas,monospace;white-space:pre-wrap;margin:0 0 16px 0'>{body}</pre>"
+    ]
     if app_url:
         parts.append(
-            f"<p><a href=\"{_html_escape(app_url)}\" "
-            f"style=\"font-size:16px;font-weight:bold\">觀看完整數據</a></p>"
+            f"<p style='margin:0'>"
+            f"<a href=\"{_html_escape(app_url)}\" "
+            f"style=\"color:#1a73e8;font-size:16px;font-weight:700;text-decoration:underline\">"
+            f"觀看完整數據</a></p>"
         )
-        parts.append(f"<p style='color:#666;font-size:12px'>{_html_escape(app_url)}</p>")
     else:
-        parts.append("<p>尚未設定 APP_URL，無法產生完整數據連結。</p>")
-    return "\n".join(parts)
+        parts.append("<p style='color:#c5221f'>尚未設定 APP_URL</p>")
+    parts.append("</div>")
+    return "".join(parts)
 
 
 def _html_escape(s: str) -> str:
