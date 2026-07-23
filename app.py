@@ -8,7 +8,17 @@ st.set_page_config(page_title="台股客觀數據審核面板", layout="wide")
 # --- 側邊欄設定 ---
 st.sidebar.header("系統參數設定")
 stock_id = st.sidebar.text_input("股票代號", value="6217")
-api_token = st.sidebar.text_input("FinMind API Token", type="password", help="請貼上您申請的永久 Token")
+_default_token = ""
+try:
+    _default_token = st.secrets.get("FINMIND_TOKEN", "") or ""
+except Exception:
+    _default_token = ""
+api_token = st.sidebar.text_input(
+    "FinMind API Token",
+    value=_default_token,
+    type="password",
+    help="優先讀取 .streamlit/secrets.toml；亦可手動貼上",
+)
 st.sidebar.markdown("---")
 st.sidebar.info("資料更新時間：每日 15:30 後 (依證交所公告為準)")
 
