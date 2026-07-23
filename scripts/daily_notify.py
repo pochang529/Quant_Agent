@@ -17,19 +17,24 @@ sys.path.insert(0, str(ROOT))
 import quant_core as qc
 
 
+def _read_secrets_lines():
+    secrets = ROOT / ".streamlit" / "secrets.toml"
+    if not secrets.exists():
+        return []
+    text = secrets.read_text(encoding="utf-8-sig")
+    return text.splitlines()
+
+
 def load_token():
     token = os.environ.get("FINMIND_TOKEN", "")
     if token:
         return token
-    secrets = ROOT / ".streamlit" / "secrets.toml"
-    if secrets.exists():
-        for line in secrets.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line.startswith("FINMIND_TOKEN"):
-                # FINMIND_TOKEN = "..."
-                parts = line.split("=", 1)
-                if len(parts) == 2:
-                    return parts[1].strip().strip('"').strip("'")
+    for line in _read_secrets_lines():
+        line = line.strip()
+        if line.startswith("FINMIND_TOKEN"):
+            parts = line.split("=", 1)
+            if len(parts) == 2:
+                return parts[1].strip().strip('"').strip("'")
     return ""
 
 
@@ -42,26 +47,24 @@ def load_push_config():
         "gmail_pass": os.environ.get("GMAIL_APP_PASSWORD", ""),
         "gmail_to": os.environ.get("GMAIL_TO", ""),
     }
-    secrets = ROOT / ".streamlit" / "secrets.toml"
-    if secrets.exists():
-        for line in secrets.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if "=" not in line or line.startswith("#"):
-                continue
-            k, v = line.split("=", 1)
-            k, v = k.strip(), v.strip().strip('"').strip("'")
-            if k == "TELEGRAM_BOT_TOKEN":
-                cfg["telegram_token"] = v
-            elif k == "TELEGRAM_CHAT_ID":
-                cfg["telegram_chat"] = v
-            elif k == "DISCORD_WEBHOOK_URL":
-                cfg["discord"] = v
-            elif k == "GMAIL_USER":
-                cfg["gmail_user"] = v
-            elif k == "GMAIL_APP_PASSWORD":
-                cfg["gmail_pass"] = v
-            elif k == "GMAIL_TO":
-                cfg["gmail_to"] = v
+    for line in _read_secrets_lines():
+        line = line.strip()
+        if "=" not in line or line.startswith("#"):
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip(), v.strip().strip('"').strip("'")
+        if k == "TELEGRAM_BOT_TOKEN":
+            cfg["telegram_token"] = v
+        elif k == "TELEGRAM_CHAT_ID":
+            cfg["telegram_chat"] = v
+        elif k == "DISCORD_WEBHOOK_URL":
+            cfg["discord"] = v
+        elif k == "GMAIL_USER":
+            cfg["gmail_user"] = v
+        elif k == "GMAIL_APP_PASSWORD":
+            cfg["gmail_pass"] = v
+        elif k == "GMAIL_TO":
+            cfg["gmail_to"] = v
     if not cfg["gmail_to"] and cfg["gmail_user"]:
         cfg["gmail_to"] = cfg["gmail_user"]
     return cfg
