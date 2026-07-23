@@ -397,12 +397,12 @@ st.markdown("---")
 st.markdown("## 定時監測與推播")
 st.markdown(
     """
-1. 在 `.streamlit/secrets.toml` 或環境變數加入（擇一通道即可）：
-   - `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`
-   - 或 `DISCORD_WEBHOOK_URL`
-2. 本機執行一次測試：`python scripts/daily_notify.py`
-3. 固定時間：以系統管理員身分執行  
-   `powershell -ExecutionPolicy Bypass -File scripts/register_windows_task.ps1`  
-   預設每個交易日概念用 **每日 15:40**（可改腳本內時間）。
+1. 在 `.streamlit/secrets.toml` 加入推播通道（可擇一或多）：
+   - Telegram：`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`
+   - Discord：`DISCORD_WEBHOOK_URL`
+   - Gmail：`GMAIL_USER` + `GMAIL_APP_PASSWORD` +（可選）`GMAIL_TO`  
+     ※ 須用 Google「應用程式密碼」，不可用一般登入密碼
+2. 本機測試：`python scripts/daily_notify.py --force`
+3. 固定時間：`powershell -ExecutionPolicy Bypass -File scripts/register_windows_task.ps1`（預設每日 15:40）
 """
 )

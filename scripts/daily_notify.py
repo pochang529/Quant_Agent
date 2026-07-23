@@ -38,6 +38,9 @@ def load_push_config():
         "telegram_token": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         "telegram_chat": os.environ.get("TELEGRAM_CHAT_ID", ""),
         "discord": os.environ.get("DISCORD_WEBHOOK_URL", ""),
+        "gmail_user": os.environ.get("GMAIL_USER", ""),
+        "gmail_pass": os.environ.get("GMAIL_APP_PASSWORD", ""),
+        "gmail_to": os.environ.get("GMAIL_TO", ""),
     }
     secrets = ROOT / ".streamlit" / "secrets.toml"
     if secrets.exists():
@@ -53,8 +56,14 @@ def load_push_config():
                 cfg["telegram_chat"] = v
             elif k == "DISCORD_WEBHOOK_URL":
                 cfg["discord"] = v
-            elif k == "FINMIND_TOKEN" and not os.environ.get("FINMIND_TOKEN"):
-                pass
+            elif k == "GMAIL_USER":
+                cfg["gmail_user"] = v
+            elif k == "GMAIL_APP_PASSWORD":
+                cfg["gmail_pass"] = v
+            elif k == "GMAIL_TO":
+                cfg["gmail_to"] = v
+    if not cfg["gmail_to"] and cfg["gmail_user"]:
+        cfg["gmail_to"] = cfg["gmail_user"]
     return cfg
 
 
@@ -137,9 +146,18 @@ def main():
         ok, info = qc.send_discord(push["discord"], msg)
         results.append(info)
         ok_any = ok_any or ok
+    if push["gmail_user"] and push["gmail_pass"]:
+        ok, info = qc.send_gmail(push["gmail_user"], push["gmail_pass"], push["gmail_to"], msg)
+        results.append(info)
+        ok_any = ok_any or ok
 
-    if not push["telegram_token"] and not push["discord"]:
-        print("WARN: 未設定 Telegram/Discord，僅列印：")
+    has_channel = bool(
+        (push["telegram_token"] and push["telegram_chat"])
+        or push["discord"]
+        or (push["gmail_user"] and push["gmail_pass"])
+    )
+    if not has_channel:
+        print("WARN: 未設定 Telegram／Discord／Gmail，僅列印：")
         print(msg)
         sys.exit(0)
 

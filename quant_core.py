@@ -443,6 +443,35 @@ def send_discord(webhook: str, text: str) -> tuple[bool, str]:
         return False, str(e)
 
 
+def send_gmail(
+    user: str,
+    app_password: str,
+    to_addr: str,
+    text: str,
+    subject: str = "Quant_Agent 定時監測",
+) -> tuple[bool, str]:
+    """Gmail SMTP。須使用「應用程式密碼」，不可用一般登入密碼。"""
+    import smtplib
+    from email.mime.text import MIMEText
+
+    if not user or not app_password or not to_addr:
+        return False, "缺少 GMAIL_USER / GMAIL_APP_PASSWORD / GMAIL_TO"
+    # App passwords are often shown with spaces
+    app_password = app_password.replace(" ", "")
+    msg = MIMEText(text, _charset="utf-8")
+    msg["Subject"] = subject
+    msg["From"] = user
+    msg["To"] = to_addr
+    try:
+        with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as server:
+            server.starttls()
+            server.login(user, app_password)
+            server.sendmail(user, [to_addr], msg.as_string())
+        return True, "gmail ok"
+    except Exception as e:
+        return False, str(e)
+
+
 def load_notify_state() -> dict:
     _ensure_data_dir()
     if not STATE_PATH.exists():
