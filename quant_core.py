@@ -404,18 +404,57 @@ def summarize_alert(sid: str, latest: pd.Series, market_weak: bool, disp_active:
     }
 
 
-def format_alert_message(items: list[dict], title: str = "Quant_Agent 定時監測") -> str:
+def format_alert_message(
+    items: list[dict],
+    title: str = "Quant_Agent 定時監測",
+    app_url: str = "",
+) -> str:
     lines = [f"【{title}】{datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
     for a in items:
         brew = "｜醞釀" if a.get("brewing") else ""
         disp = "｜處置中" if a.get("disp_active") else ""
         mkt = "｜大盤弱" if a.get("market_weak") else ""
+        close_s = fmt_num(a.get("close")) if a.get("close") is not None else "—"
         lines.append(
-            f"{a['stock_id']} 收{fmt_num(a['close'])}｜進場{a['entry']}({a['pass_count']}/3)"
+            f"{a['stock_id']} 收{close_s}｜進場{a['entry']}({a['pass_count']}/3)"
             f"｜{a['exit']}({a['x_pass']}/3)｜乖離{fmt_num(a.get('ma_gap_pct'))}%"
             f"｜量比{fmt_num(a.get('vol_ratio'))}{brew}{disp}{mkt}"
         )
+    lines.append("")
+    if app_url:
+        lines.append(f"觀看完整數據：{app_url}")
+    else:
+        lines.append("觀看完整數據：請在 secrets 設定 APP_URL（Streamlit 雲端網址）")
     return "\n".join(lines)
+
+
+def format_alert_html(
+    items: list[dict],
+    title: str = "Quant_Agent 定時監測",
+    app_url: str = "",
+) -> str:
+    """HTML body for Gmail (clickable link)."""
+    plain = format_alert_message(items, title=title, app_url="")
+    parts = [f"<pre style='font-family:monospace;white-space:pre-wrap'>{_html_escape(plain)}</pre>"]
+    if app_url:
+        parts.append(
+            f"<p><a href=\"{_html_escape(app_url)}\" "
+            f"style=\"font-size:16px;font-weight:bold\">觀看完整數據</a></p>"
+        )
+        parts.append(f"<p style='color:#666;font-size:12px'>{_html_escape(app_url)}</p>")
+    else:
+        parts.append("<p>尚未設定 APP_URL，無法產生完整數據連結。</p>")
+    return "\n".join(parts)
+
+
+def _html_escape(s: str) -> str:
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
 
 
 def send_telegram(token: str, chat_id: str, text: str) -> tuple[bool, str]:
@@ -449,16 +488,22 @@ def send_gmail(
     to_addr: str,
     text: str,
     subject: str = "Quant_Agent 定時監測",
+    html: str | None = None,
 ) -> tuple[bool, str]:
     """Gmail SMTP。須使用「應用程式密碼」，不可用一般登入密碼。"""
     import smtplib
+    from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
     if not user or not app_password or not to_addr:
         return False, "缺少 GMAIL_USER / GMAIL_APP_PASSWORD / GMAIL_TO"
-    # App passwords are often shown with spaces
     app_password = app_password.replace(" ", "")
-    msg = MIMEText(text, _charset="utf-8")
+    if html:
+        msg = MIMEMultipart("alternative")
+        msg.attach(MIMEText(text, "plain", "utf-8"))
+        msg.attach(MIMEText(html, "html", "utf-8"))
+    else:
+        msg = MIMEText(text, _charset="utf-8")
     msg["Subject"] = subject
     msg["From"] = user
     msg["To"] = to_addr

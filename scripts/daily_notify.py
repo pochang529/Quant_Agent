@@ -46,6 +46,7 @@ def load_push_config():
         "gmail_user": os.environ.get("GMAIL_USER", ""),
         "gmail_pass": os.environ.get("GMAIL_APP_PASSWORD", ""),
         "gmail_to": os.environ.get("GMAIL_TO", ""),
+        "app_url": os.environ.get("APP_URL", ""),
     }
     for line in _read_secrets_lines():
         line = line.strip()
@@ -65,6 +66,8 @@ def load_push_config():
             cfg["gmail_pass"] = v
         elif k == "GMAIL_TO":
             cfg["gmail_to"] = v
+        elif k == "APP_URL":
+            cfg["app_url"] = v
     if not cfg["gmail_to"] and cfg["gmail_user"]:
         cfg["gmail_to"] = cfg["gmail_user"]
     return cfg
@@ -126,7 +129,8 @@ def main():
         disp = qc.disposition_status(sid, start, end, token, False)
         alerts.append(qc.summarize_alert(sid, latest, market_weak, disp["active"]))
 
-    msg = qc.format_alert_message(alerts)
+    msg = qc.format_alert_message(alerts, app_url=push.get("app_url", ""))
+    html = qc.format_alert_html(alerts, app_url=push.get("app_url", ""))
 
     # dedupe: only push when fingerprint changes (unless --force)
     state = qc.load_notify_state()
@@ -150,7 +154,13 @@ def main():
         results.append(info)
         ok_any = ok_any or ok
     if push["gmail_user"] and push["gmail_pass"]:
-        ok, info = qc.send_gmail(push["gmail_user"], push["gmail_pass"], push["gmail_to"], msg)
+        ok, info = qc.send_gmail(
+            push["gmail_user"],
+            push["gmail_pass"],
+            push["gmail_to"],
+            msg,
+            html=html,
+        )
         results.append(info)
         ok_any = ok_any or ok
 
