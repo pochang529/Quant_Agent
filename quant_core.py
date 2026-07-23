@@ -365,7 +365,67 @@ def peer_stats_at_horizon(path_df: pd.DataFrame, horizon: int) -> dict:
         "up_rate": float((rets > 0).mean()) if len(rets) else None,
         "avg": float(rets.mean()) if len(rets) else None,
         "median": float(rets.median()) if len(rets) else None,
+        "down_rate": float((rets < 0).mean()) if len(rets) else None,
     }
+
+
+def peer_trigger_events(
+    hist: pd.DataFrame,
+    peer_idx: np.ndarray,
+    horizons: tuple[int, ...] = (5, 10, 20),
+) -> pd.DataFrame:
+    """
+    每個同條件觸發日的當下數值 + 後續漲跌報酬。
+    用於「路徑上看到被觸發的值，並推敲之後漲跌」。
+    """
+    closes = hist["close"].to_numpy()
+    rows = []
+    for i in peer_idx:
+        if i < 0 or i >= len(hist):
+            continue
+        row = hist.iloc[i]
+        base = float(row["close"])
+        if base == 0 or np.isnan(base):
+            continue
+        item = {
+            "觸發日": pd.Timestamp(row["date"]).strftime("%Y-%m-%d"),
+            "觸發收盤": round(base, 2),
+            "關數": int(row["pass_count"]),
+            "G1": "✅" if row["gate1"] == 1 else "❌",
+            "G2": "✅" if row["gate2"] == 1 else "❌",
+            "G3": "✅" if row["gate3"] == 1 else "❌",
+            "乖離%": round(float(row["ma_gap_pct"]), 2) if pd.notna(row["ma_gap_pct"]) else None,
+            "量比": round(float(row["vol_ratio"]), 2) if pd.notna(row["vol_ratio"]) else None,
+            "醞釀": "Y" if int(row["brewing"]) == 1 else "",
+        }
+        last_ret = None
+        for h in horizons:
+            j = i + h
+            if j < len(closes) and not np.isnan(closes[j]):
+                ret = (float(closes[j]) / base - 1) * 100
+                item[f"後{h}日%"] = round(ret, 2)
+                last_ret = ret
+            else:
+                item[f"後{h}日%"] = None
+        if last_ret is None:
+            # fallback nearest available within max horizon
+            max_h = max(horizons)
+            for d in range(1, max_h + 1):
+                j = i + d
+                if j < len(closes) and not np.isnan(closes[j]):
+                    last_ret = (float(closes[j]) / base - 1) * 100
+            item["方向"] = "—" if last_ret is None else ("漲" if last_ret > 0 else ("跌" if last_ret < 0 else "平"))
+        else:
+            # 方向以第一個有值的 horizon 為準（通常 5 日），否則用 last
+            dir_ret = item.get(f"後{horizons[0]}日%")
+            if dir_ret is None:
+                dir_ret = last_ret
+            item["方向"] = "漲" if dir_ret > 0 else ("跌" if dir_ret < 0 else "平")
+        rows.append(item)
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows).sort_values("觸發日", ascending=False)
+    return out.reset_index(drop=True)
 
 
 # ----- alerts / notify -----

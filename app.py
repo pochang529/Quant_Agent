@@ -207,8 +207,8 @@ if not np.isnan(atr) and atr > 0:
 st.markdown("---")
 st.markdown("## 實際組 × 同條件歷史對照")
 st.caption(
-    f"同條件定義：進場關數相同（目前 {pass_count}/3）且乖離差在 ±{gap_tol}% 點內。"
-    "實際持倉走勢疊加在歷史中位數／四分位路徑上，供盈虧後調參。"
+    f"同條件＝歷史上「被觸發」的日子：進場關數＝目前 {pass_count}/3，且乖離差在 ±{gap_tol}% 點內。"
+    "下方路徑與觸發明細用來對照：當時觸發值 → 之後漲跌變化。"
 )
 
 # simulate today as entry
@@ -220,15 +220,19 @@ peer_idx = np.array([i for i in peer_idx if i + 1 < len(usable)])
 path_df = qc.peer_forward_paths(usable, peer_idx, horizon=peer_horizon)
 summary = qc.summarize_peer_paths(path_df)
 stats = qc.peer_stats_at_horizon(path_df, fwd_days)
+trigger_tbl = qc.peer_trigger_events(usable, peer_idx, horizons=(5, 10, 20))
 
 s1, s2, s3, s4 = st.columns(4)
-s1.metric("同條件歷史樣本", f"{stats.get('n', 0)} 組")
+s1.metric("同條件觸發次數", f"{stats.get('n', 0)} 次")
 s2.metric(
-    f"歷史後{fwd_days}日上漲率",
+    f"觸發後{fwd_days}日上漲率",
     f"{stats['up_rate'] * 100:.1f}%" if stats.get("up_rate") is not None else "—",
 )
-s3.metric(f"歷史後{fwd_days}日平均%", qc.fmt_num(stats.get("avg")))
-s4.metric(f"歷史後{fwd_days}日中位%", qc.fmt_num(stats.get("median")))
+s3.metric(
+    f"觸發後{fwd_days}日下跌率",
+    f"{stats['down_rate'] * 100:.1f}%" if stats.get("down_rate") is not None else "—",
+)
+s4.metric(f"觸發後{fwd_days}日中位%", qc.fmt_num(stats.get("median")))
 
 # chart: peers band + optional actuals
 chart_df = None
@@ -246,16 +250,43 @@ for p in open_pos:
     if not ap.empty:
         overlay_cols[f"實際 {p['id']}({p['entry_date']})"] = ap.set_index("day")["ret_pct"]
 
-# also "若今日進場" mark day0=0
 if chart_df is not None:
     plot = chart_df.copy()
     for name, ser in overlay_cols.items():
         plot = plot.join(ser.rename(name), how="outer")
     st.line_chart(plot)
-    st.caption("縱軸：相對進場價報酬％｜橫軸：進場後第 N 個交易日")
+    st.caption(
+        "路徑＝歷史每次「同條件觸發」後的報酬分布（相對觸發日收盤）。"
+        "縱軸％｜橫軸＝觸發後第 N 個交易日。可與實際持倉曲線對照。"
+    )
 else:
     st.info("同條件歷史樣本不足，無法畫路徑。可放寬乖離容差或拉長回溯年數。")
 
+st.markdown("### 歷史觸發明細（當下數值 → 後續漲跌）")
+if trigger_tbl.empty:
+    st.caption("無觸發樣本。")
+else:
+    # 漲跌計數（以觀察天數欄為準）
+    col_ret = f"後{fwd_days}日%"
+    if col_ret in trigger_tbl.columns:
+        valid = trigger_tbl[col_ret].dropna()
+        up_n = int((valid > 0).sum())
+        down_n = int((valid < 0).sum())
+        flat_n = int((valid == 0).sum())
+        st.write(
+            f"以 **後{fwd_days}日** 計：漲 **{up_n}**／跌 **{down_n}**／平 **{flat_n}**"
+            f"（共 {len(valid)} 筆有完整後續）"
+        )
+    st.dataframe(trigger_tbl.head(40), hide_index=True, use_container_width=True)
+    st.caption("表中每一列＝歷史上一次與「今日條件吻合」的觸發；G1/G2/G3 為當日三關，後N日％為觸發後漲跌。")
+
+# 今日條件快照（方便對照表內觸發值）
+st.markdown("### 今日觸發基準（用來匹配上表）")
+st.write(
+    f"關數 **{pass_count}/3**｜G1 {'✅' if gate1 else '❌'} G2 {'✅' if gate2 else '❌'} G3 {'✅' if gate3 else '❌'}"
+    f"｜乖離 **{qc.fmt_num(ma_gap)}%**｜量比 **{qc.fmt_num(vol_ratio)}**"
+    f"｜收盤 **{qc.fmt_num(close_v)}**｜容差 ±{gap_tol}% 點"
+)
 # register actual position
 st.markdown("### 登記實際進場（寫入本機 data/positions.json，不上傳 Git）")
 with st.form("add_pos"):
