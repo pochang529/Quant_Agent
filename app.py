@@ -397,12 +397,12 @@ st.markdown("---")
 st.markdown("## 定時監測與推播")
 st.markdown(
     """
-1. 在 `.streamlit/secrets.toml` 加入推播通道（可擇一或多）：
-   - Telegram：`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`
-   - Discord：`DISCORD_WEBHOOK_URL`
-   - Gmail：`GMAIL_USER` + `GMAIL_APP_PASSWORD` +（可選）`GMAIL_TO`  
-     ※ 須用 Google「應用程式密碼」，不可用一般登入密碼
-2. 本機測試：`python scripts/daily_notify.py --force`
-3. 固定時間：`powershell -ExecutionPolicy Bypass -File scripts/register_windows_task.ps1`（預設每日 15:40）
+1. 推播通道見 `.streamlit/secrets.toml`（Gmail／Telegram／Discord）
+2. **盤中才打 API**：週一至五 **09:00–13:30（台北）**；其餘時段直接略過
+3. **觸發才推播**：進場綠／黃／僅觀察、離場黃／紅、或醞釀出現，且相對上次狀態有變
+4. 本機測試：`python scripts/daily_notify.py --force`
+5. 排程：`powershell -ExecutionPolicy Bypass -File scripts/register_windows_task.ps1`  
+   （週一至五約每 15 分鐘；腳本會再擋非盤中）
+6. 注意：FinMind 日頻資料盤中可能仍是「最近已公告日」；完整當日收盤常約 15:30 後才齊
 """
 )

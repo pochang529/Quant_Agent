@@ -1,8 +1,11 @@
 """
-定時監測：讀 data/watchlist.txt + 持倉代號，計算燈號並推播。
+盤中監測：僅週一至週五 09:00–13:30（台北）打 API；
+燈號相對上次有變化且符合觸發條件時才推播。
+
 用法：
   python scripts/daily_notify.py
-  python scripts/daily_notify.py --force   # 忽略狀態去重，強制推播
+  python scripts/daily_notify.py --force          # 略過盤中時段限制＋強制推播
+  python scripts/daily_notify.py --ignore-hours   # 僅略過時段（仍做狀態去重）
 """
 from __future__ import annotations
 
@@ -75,9 +78,15 @@ def load_push_config():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--force", action="store_true", help="強制推播（略過狀態去重）")
+    parser.add_argument("--force", action="store_true", help="略過盤中限制＋強制推播")
+    parser.add_argument("--ignore-hours", action="store_true", help="略過盤中時段限制")
     parser.add_argument("--years", type=int, default=1)
     args = parser.parse_args()
+
+    # 1) 盤中時段閘門：非週一至五 09:00–13:30 不打 API
+    if not args.force and not args.ignore_hours and not qc.is_tw_market_session():
+        print("SKIP: 非台股盤中時段（週一至五 09:00–13:30 台北），不打 API")
+        sys.exit(0)
 
     token = load_token()
     if not token:
@@ -129,23 +138,30 @@ def main():
         disp = qc.disposition_status(sid, start, end, token, False)
         alerts.append(qc.summarize_alert(sid, latest, market_weak, disp["active"]))
 
-    # Gmail：純文字也不貼長網址，只提示看 HTML 連結文字
-    msg_gmail = qc.format_alert_message(alerts, app_url="")
+    title = "Quant_Agent 盤中監測"
+    msg_gmail = qc.format_alert_message(alerts, title=title, app_url="")
     if push.get("app_url"):
         msg_gmail = msg_gmail.rstrip() + "\n\n觀看完整數據（請點信件中的連結）"
-    msg = qc.format_alert_message(alerts, app_url=push.get("app_url", ""))
-    html = qc.format_alert_html(alerts, app_url=push.get("app_url", ""))
+    msg = qc.format_alert_message(alerts, title=title, app_url=push.get("app_url", ""))
+    html = qc.format_alert_html(alerts, title=title, app_url=push.get("app_url", ""))
 
-    # dedupe: only push when fingerprint changes (unless --force)
     state = qc.load_notify_state()
     fingerprint = "|".join(
         f"{a['stock_id']}:{a['entry']}:{a['exit']}:{a.get('brewing')}:{a.get('disp_active')}"
         for a in alerts
     )
-    if not args.force and state.get("fingerprint") == fingerprint:
-        print("NOCHANGE: 燈號未變，略過推播")
-        print(msg)
-        return
+
+    # 2) 僅在「有觸發條件」且「相對上次狀態有變」時推播
+    triggered = [a for a in alerts if qc.is_trigger_alert(a)]
+    if not args.force:
+        if not triggered:
+            print("NOTRIGGER: 無觸發條件（綠／黃／僅觀察／離場黃紅／醞釀），不推播")
+            print(msg)
+            return
+        if state.get("fingerprint") == fingerprint:
+            print("NOCHANGE: 燈號未變，略過推播")
+            print(msg)
+            return
 
     ok_any = False
     results = []
@@ -163,6 +179,7 @@ def main():
             push["gmail_pass"],
             push["gmail_to"],
             msg_gmail,
+            subject=title,
             html=html,
         )
         results.append(info)

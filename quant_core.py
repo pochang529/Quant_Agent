@@ -557,3 +557,37 @@ def load_watchlist_file() -> list[str]:
         if c and not c.startswith("#") and c not in codes:
             codes.append(c)
     return codes[:20]
+
+
+def is_tw_market_session(now: datetime | None = None) -> bool:
+    """台股一般交易：週一至週五 09:00–13:30（Asia/Taipei）。"""
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("Asia/Taipei")
+    except Exception:
+        tz = None
+    if now is None:
+        now = datetime.now(tz) if tz else datetime.now()
+    elif tz is not None and now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    elif tz is not None:
+        now = now.astimezone(tz)
+
+    if now.weekday() >= 5:  # Sat/Sun
+        return False
+    t = now.hour * 60 + now.minute
+    return (9 * 60) <= t <= (13 * 60 + 30)
+
+
+def is_trigger_alert(alert: dict) -> bool:
+    """設定值觸發：進場綠／黃／僅觀察、離場黃／紅、醞釀中。"""
+    if alert.get("entry") in ("綠燈", "黃燈", "僅觀察"):
+        return True
+    if alert.get("exit") in ("離場黃", "離場紅"):
+        return True
+    if alert.get("brewing"):
+        return True
+    if alert.get("entry") == "資料失敗":
+        return True
+    return False
