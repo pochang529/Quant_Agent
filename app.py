@@ -1,9 +1,13 @@
+import importlib
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
 
 import quant_core as qc
+
+qc = importlib.reload(qc)
 
 st.set_page_config(page_title="台股客觀數據審核面板", layout="wide")
 
