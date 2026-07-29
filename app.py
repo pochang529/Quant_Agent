@@ -13,11 +13,10 @@ st.set_page_config(page_title="台股客觀數據審核面板", layout="wide")
 
 # --- 側邊欄 ---
 st.sidebar.header("系統參數設定")
-stock_id = st.sidebar.text_input("股票代號", value="6217").strip()
 
 if "watchlist_editor" not in st.session_state:
     saved_watchlist = qc.load_watchlist_file()
-    st.session_state.watchlist_editor = "\n".join(saved_watchlist or [stock_id])
+    st.session_state.watchlist_editor = "\n".join(saved_watchlist or ["6217"])
 
 candidate_code = st.sidebar.text_input(
     "新增監測股別",
@@ -33,6 +32,7 @@ if st.sidebar.button("＋ 加入候選", use_container_width=True):
     else:
         current_codes.append(candidate_code)
         st.session_state.watchlist_editor = "\n".join(current_codes)
+        st.session_state.active_stock = candidate_code
 
 watchlist_raw = st.sidebar.text_area(
     "自選清單（多檔，每行一個代號）",
@@ -41,6 +41,10 @@ watchlist_raw = st.sidebar.text_area(
     help="可直接增刪代號；按下方按鈕後會寫入 data/watchlist.txt，重開時自動載入",
 )
 watchlist_codes = qc.parse_watchlist(watchlist_raw)
+if not watchlist_codes:
+    watchlist_codes = ["6217"]
+if st.session_state.get("active_stock") not in watchlist_codes:
+    st.session_state.active_stock = watchlist_codes[0]
 st.sidebar.caption(f"目前候選：{len(watchlist_codes)} 檔")
 if st.sidebar.button("💾 儲存自選清單", type="primary", use_container_width=True):
     qc.save_watchlist_file(watchlist_codes)
@@ -63,6 +67,14 @@ api_token = st.sidebar.text_input("FinMind API Token", value=_default_token, typ
 st.sidebar.markdown("---")
 st.sidebar.info("資料更新時間：每日 15:30 後")
 st.sidebar.caption("進場綠燈不變｜實際組可對照同條件歷史｜定時推播見 scripts/")
+
+stock_id = st.segmented_control(
+    "監測股別分頁",
+    options=watchlist_codes,
+    key="active_stock",
+    selection_mode="single",
+    help="切換候選股後，下方整個審核畫布會同步更新",
+)
 
 
 @st.cache_data(ttl=3600)
