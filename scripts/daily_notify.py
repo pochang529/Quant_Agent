@@ -1,11 +1,16 @@
 """
-盤中監測：僅週一至週五 09:00–13:30（台北）打 API；
-燈號相對上次有變化且符合觸發條件時才推播。
+推播分為兩條並行路徑：
+1. 盤中每 15 分鐘檢查，燈號達標且相對上次有變化時推播。
+2. 09:00 開盤、11:30 盤中、15:40 收盤固定推播完整數據。
 
 用法：
   python scripts/daily_notify.py
   python scripts/daily_notify.py --force          # 略過盤中時段限制＋強制推播
   python scripts/daily_notify.py --ignore-hours   # 僅略過時段（仍做狀態去重）
+  python scripts/daily_notify.py --fixed open
+  python scripts/daily_notify.py --fixed midday
+  python scripts/daily_notify.py --fixed close
+  python scripts/daily_notify.py --fixed close --dry-run
 """
 from __future__ import annotations
 
@@ -80,11 +85,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--force", action="store_true", help="略過盤中限制＋強制推播")
     parser.add_argument("--ignore-hours", action="store_true", help="略過盤中時段限制")
+    parser.add_argument(
+        "--fixed",
+        choices=("open", "midday", "close"),
+        help="固定推播時段；不受觸發條件與狀態去重限制",
+    )
+    parser.add_argument("--dry-run", action="store_true", help="抓取並列印推播內容，但不送出")
     parser.add_argument("--years", type=int, default=1)
     args = parser.parse_args()
 
-    # 1) 盤中時段閘門：非週一至五 09:00–13:30 不打 API
-    if not args.force and not args.ignore_hours and not qc.is_tw_market_session():
+    # 固定推播允許收盤後執行，但週末仍不打 API。
+    if args.fixed and not args.force and not qc.is_tw_trading_day():
+        print("SKIP: 非台股交易日，不執行固定推播")
+        sys.exit(0)
+    if not args.fixed and not args.force and not args.ignore_hours and not qc.is_tw_market_session():
         print("SKIP: 非台股盤中時段（週一至五 09:00–13:30 台北），不打 API")
         sys.exit(0)
 
@@ -138,7 +152,12 @@ def main():
         disp = qc.disposition_status(sid, start, end, token, False)
         alerts.append(qc.summarize_alert(sid, latest, market_weak, disp["active"]))
 
-    title = "Quant_Agent 盤中監測"
+    fixed_titles = {
+        "open": "Quant_Agent 開盤固定推播",
+        "midday": "Quant_Agent 盤中固定推播",
+        "close": "Quant_Agent 收盤固定推播",
+    }
+    title = fixed_titles.get(args.fixed, "Quant_Agent 達標即時監測")
     msg_gmail = qc.format_alert_message(alerts, title=title, app_url="")
     if push.get("app_url"):
         msg_gmail = msg_gmail.rstrip() + "\n\n觀看完整數據（請點信件中的連結）"
@@ -151,9 +170,9 @@ def main():
         for a in alerts
     )
 
-    # 2) 僅在「有觸發條件」且「相對上次狀態有變」時推播
+    # 達標監測需符合觸發且狀態改變；固定時段則每次都推播。
     triggered = [a for a in alerts if qc.is_trigger_alert(a)]
-    if not args.force:
+    if not args.force and not args.fixed:
         if not triggered:
             print("NOTRIGGER: 無觸發條件（綠／黃／僅觀察／離場黃紅／醞釀），不推播")
             print(msg)
@@ -162,6 +181,11 @@ def main():
             print("NOCHANGE: 燈號未變，略過推播")
             print(msg)
             return
+
+    if args.dry_run:
+        print("DRYRUN: 已完成資料抓取與推播內容組裝，不實際送出")
+        print(msg)
+        return
 
     ok_any = False
     results = []
@@ -198,8 +222,11 @@ def main():
     print(msg)
     print("PUSH:", results)
     if ok_any:
-        state["fingerprint"] = fingerprint
-        state["last_push"] = msg
+        if args.fixed:
+            state[f"last_fixed_{args.fixed}"] = msg
+        else:
+            state["fingerprint"] = fingerprint
+            state["last_push"] = msg
         qc.save_notify_state(state)
     else:
         sys.exit(2)

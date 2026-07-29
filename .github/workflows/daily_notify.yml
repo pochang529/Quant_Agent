@@ -1,9 +1,21 @@
-name: Quant Agent Intraday Notify
+name: Quant Agent Scheduled Notify
 on:
   schedule:
-    # Taipei 09:00–13:30 ≈ UTC 01:00–05:30 (no DST); every 15 min, Mon–Fri
-    - cron: "0,15,30,45 1-5 * * 1-5"
+    # Trigger checks every 15 minutes, excluding the fixed 09:00/11:30 slots.
+    - cron: "15,30,45 1 * * 1-5"
+    - cron: "0,15,30,45 2 * * 1-5"
+    - cron: "0,15,45 3 * * 1-5"
+    - cron: "0,15,30,45 4 * * 1-5"
+    - cron: "0,15,30 5 * * 1-5"
+    # Fixed reports: Taipei 09:00 open, 11:30 midday, 15:40 close.
+    - cron: "0 1 * * 1-5"
+    - cron: "30 3 * * 1-5"
+    - cron: "40 7 * * 1-5"
   workflow_dispatch:
+
+concurrency:
+  group: quant-agent-notify
+  cancel-in-progress: false
 
 jobs:
   notify:
@@ -14,9 +26,22 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests pandas numpy
-      - name: Run monitor (market-hours gated)
+      - name: Restore notification state
+        uses: actions/cache/restore@v4
+        with:
+          path: data/notify_state.json
+          key: quant-agent-notify-state-${{ github.run_id }}
+          restore-keys: quant-agent-notify-state-
+      - name: Run scheduled notification
         if: github.event_name == 'schedule'
-        run: python scripts/daily_notify.py
+        shell: bash
+        run: |
+          case "${{ github.event.schedule }}" in
+            "0 1 * * 1-5") python scripts/daily_notify.py --fixed open ;;
+            "30 3 * * 1-5") python scripts/daily_notify.py --fixed midday ;;
+            "40 7 * * 1-5") python scripts/daily_notify.py --fixed close ;;
+            *) python scripts/daily_notify.py ;;
+          esac
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -26,7 +51,7 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_TO: ${{ secrets.GMAIL_TO }}
           APP_URL: ${{ secrets.APP_URL }}
-      - name: Force run (manual)
+      - name: Run manual notification
         if: github.event_name == 'workflow_dispatch'
         run: python scripts/daily_notify.py --force
         env:
@@ -38,3 +63,9 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_TO: ${{ secrets.GMAIL_TO }}
           APP_URL: ${{ secrets.APP_URL }}
+      - name: Save notification state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/notify_state.json
+          key: quant-agent-notify-state-${{ github.run_id }}

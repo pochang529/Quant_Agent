@@ -607,16 +607,46 @@ def save_notify_state(state: dict):
     STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def parse_watchlist(text: str) -> list[str]:
+    codes = []
+    for line in text.replace(",", "\n").splitlines():
+        code = line.strip()
+        if code and not code.startswith("#") and code not in codes:
+            codes.append(code)
+    return codes
+
+
+def save_watchlist_file(codes: list[str]):
+    _ensure_data_dir()
+    normalized = parse_watchlist("\n".join(codes))
+    WATCHLIST_PATH.write_text(
+        "\n".join(normalized) + ("\n" if normalized else ""),
+        encoding="utf-8",
+    )
+
+
 def load_watchlist_file() -> list[str]:
     _ensure_data_dir()
     if not WATCHLIST_PATH.exists():
         WATCHLIST_PATH.write_text("6217\n", encoding="utf-8")
-    codes = []
-    for line in WATCHLIST_PATH.read_text(encoding="utf-8").splitlines():
-        c = line.strip()
-        if c and not c.startswith("#") and c not in codes:
-            codes.append(c)
-    return codes[:20]
+    return parse_watchlist(WATCHLIST_PATH.read_text(encoding="utf-8"))
+
+
+def is_tw_trading_day(now: datetime | None = None) -> bool:
+    """Return whether the Taipei-local date is Monday through Friday."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("Asia/Taipei")
+    except Exception:
+        tz = None
+    if now is None:
+        now = datetime.now(tz) if tz else datetime.now()
+    elif tz is not None and now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    elif tz is not None:
+        now = now.astimezone(tz)
+    return now.weekday() < 5
 
 
 def is_tw_market_session(now: datetime | None = None) -> bool:
@@ -634,7 +664,7 @@ def is_tw_market_session(now: datetime | None = None) -> bool:
     elif tz is not None:
         now = now.astimezone(tz)
 
-    if now.weekday() >= 5:  # Sat/Sun
+    if not is_tw_trading_day(now):
         return False
     t = now.hour * 60 + now.minute
     return (9 * 60) <= t <= (13 * 60 + 30)

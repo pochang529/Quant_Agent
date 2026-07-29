@@ -10,12 +10,38 @@ st.set_page_config(page_title="台股客觀數據審核面板", layout="wide")
 # --- 側邊欄 ---
 st.sidebar.header("系統參數設定")
 stock_id = st.sidebar.text_input("股票代號", value="6217").strip()
+
+if "watchlist_editor" not in st.session_state:
+    saved_watchlist = qc.load_watchlist_file()
+    st.session_state.watchlist_editor = "\n".join(saved_watchlist or [stock_id])
+
+candidate_code = st.sidebar.text_input(
+    "新增監測股別",
+    placeholder="輸入股票代號，例如 2330",
+)
+if st.sidebar.button("＋ 加入候選", use_container_width=True):
+    candidate_code = candidate_code.strip()
+    current_codes = qc.parse_watchlist(st.session_state.watchlist_editor)
+    if not candidate_code:
+        st.sidebar.warning("請先輸入股票代號")
+    elif candidate_code in current_codes:
+        st.sidebar.info(f"{candidate_code} 已在清單中")
+    else:
+        current_codes.append(candidate_code)
+        st.session_state.watchlist_editor = "\n".join(current_codes)
+
 watchlist_raw = st.sidebar.text_area(
     "自選清單（多檔，每行一個代號）",
-    value="6217",
-    height=80,
-    help="最多 10 檔；並會寫入 data/watchlist.txt 供定時推播",
+    key="watchlist_editor",
+    height=140,
+    help="可直接增刪代號；按下方按鈕後會寫入 data/watchlist.txt，重開時自動載入",
 )
+watchlist_codes = qc.parse_watchlist(watchlist_raw)
+st.sidebar.caption(f"目前候選：{len(watchlist_codes)} 檔")
+if st.sidebar.button("💾 儲存自選清單", type="primary", use_container_width=True):
+    qc.save_watchlist_file(watchlist_codes)
+    st.sidebar.success(f"已儲存 {len(watchlist_codes)} 檔，定時推播將使用此清單")
+
 lookback_years = st.sidebar.selectbox("歷史驗證回溯年數", options=[1, 2, 3], index=0)
 fwd_days = st.sidebar.selectbox("綠燈／離場／對照觀察天數", options=[5, 10, 20], index=1)
 brew_window = st.sidebar.selectbox("醞釀→綠燈觀察窗（交易日）", options=[5, 10, 20], index=1)
@@ -51,18 +77,6 @@ if not api_token:
     st.stop()
 
 start_date, end_date = qc.date_range(lookback_years)
-
-# persist watchlist for notifier
-try:
-    codes_save = []
-    for line in watchlist_raw.replace(",", "\n").splitlines():
-        c = line.strip()
-        if c and c not in codes_save:
-            codes_save.append(c)
-    qc.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    qc.WATCHLIST_PATH.write_text("\n".join(codes_save[:20]) + "\n", encoding="utf-8")
-except Exception:
-    pass
 
 with st.spinner("數據抓取與客觀運算中…"):
     usable = cached_bundle(stock_id, start_date, end_date, api_token)
@@ -175,6 +189,71 @@ with g3:
         st.success(f"量能已過｜{qc.fmt_num(vol_ratio)}")
     else:
         st.error(f"量能未過｜量比仍差 {qc.fmt_num(1.5 - vol_ratio)}")
+
+# ===== 收盤價期間對照 =====
+st.markdown("---")
+st.markdown("## 收盤價期間對照")
+period_choice = st.radio(
+    "選擇期間",
+    options=["近7日", "近1月", "自訂日期"],
+    horizontal=True,
+    help="近7日／近1月以交易日計；自訂可選起迄日",
+)
+price_view = usable.copy()
+price_view["date"] = pd.to_datetime(price_view["date"])
+latest_day = pd.Timestamp(latest["date"]).normalize()
+
+if period_choice == "近7日":
+    sliced = price_view.tail(7)
+elif period_choice == "近1月":
+    sliced = price_view.tail(22)
+else:
+    min_d = price_view["date"].min().date()
+    max_d = price_view["date"].max().date()
+    default_start = max((latest_day - pd.Timedelta(days=6)).date(), min_d)
+    custom_range = st.date_input(
+        "自訂日期區間",
+        value=(default_start, max_d),
+        min_value=min_d,
+        max_value=max_d,
+    )
+    if isinstance(custom_range, (list, tuple)) and len(custom_range) == 2:
+        d0, d1 = pd.Timestamp(custom_range[0]), pd.Timestamp(custom_range[1])
+        if d0 > d1:
+            d0, d1 = d1, d0
+        sliced = price_view[(price_view["date"] >= d0) & (price_view["date"] <= d1)]
+    else:
+        sliced = price_view.tail(7)
+        st.info("請選完整起迄日；暫以近7日顯示")
+
+if sliced.empty:
+    st.warning("此期間無交易日資料")
+else:
+    day_nums = [int(d.day) for d in sliced["date"]]
+    st.caption(
+        f"期間日號：{day_nums[0]}～{day_nums[-1]}（"
+        + "、".join(str(n) for n in day_nums)
+        + "）｜共 {0} 個交易日".format(len(sliced))
+    )
+    table_df = pd.DataFrame(
+        {
+            "日期": [d.strftime("%Y-%m-%d") for d in sliced["date"]],
+            "日": day_nums,
+            "收盤價": [round(float(v), 2) for v in sliced["close"]],
+            "20MA": [
+                round(float(v), 2) if pd.notna(v) else None for v in sliced["20MA"]
+            ],
+            "量(張)": [
+                round(float(v), 0) if pd.notna(v) else None for v in sliced["Volume_張"]
+            ],
+        }
+    )
+    st.dataframe(table_df, hide_index=True, use_container_width=True)
+    chart_df = sliced.set_index("date")[["close", "20MA"]].rename(
+        columns={"close": "收盤價", "20MA": "20MA"}
+    )
+    st.line_chart(chart_df)
+    st.caption(f"{stock_id}｜{period_choice}收盤價對照（含 20MA）")
 
 # ===== 離場 =====
 st.markdown("---")
@@ -388,12 +467,7 @@ n2.metric(
 # ===== 自選掃描 =====
 st.markdown("---")
 st.markdown("## 自選清單掃描")
-codes = []
-for line in watchlist_raw.replace(",", "\n").splitlines():
-    c = line.strip()
-    if c and c not in codes:
-        codes.append(c)
-codes = codes[:10]
+codes = qc.parse_watchlist(watchlist_raw)
 scan_rows = []
 with st.spinner("掃描自選…"):
     for code in codes:
@@ -429,11 +503,10 @@ st.markdown("## 定時監測與推播")
 st.markdown(
     """
 1. 推播通道見 `.streamlit/secrets.toml`（Gmail／Telegram／Discord）
-2. **盤中才打 API**：週一至五 **09:00–13:30（台北）**；其餘時段直接略過
-3. **觸發才推播**：進場綠／黃／僅觀察、離場黃／紅、或醞釀出現，且相對上次狀態有變
+2. **固定推播**：週一至五 **09:00 開盤／11:30 盤中／15:40 收盤**（台北）
+3. **達標即推播**：09:00–13:30 每 15 分鐘檢查；進場綠／黃／僅觀察、離場黃／紅或醞釀狀態改變時推播
 4. 本機測試：`python scripts/daily_notify.py --force`
-5. 排程：`powershell -ExecutionPolicy Bypass -File scripts/register_windows_task.ps1`  
-   （週一至五約每 15 分鐘；腳本會再擋非盤中）
+5. 排程：`powershell -ExecutionPolicy Bypass -File scripts/register_windows_task.ps1`
 6. 注意：FinMind 日頻資料盤中可能仍是「最近已公告日」；完整當日收盤常約 15:30 後才齊
 """
 )
