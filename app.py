@@ -320,7 +320,7 @@ st.markdown("---")
 st.markdown("## 實際組 × 同條件歷史對照")
 st.caption(
     f"同條件＝歷史上「被觸發」的日子：進場關數＝目前 {pass_count}/3，且乖離差在 ±{gap_tol}% 點內。"
-    "下方路徑與觸發明細用來對照：當時觸發值 → 之後漲跌變化。"
+    "系統會自動彙整後續走向；不必逐筆人工對完才下結論。"
 )
 
 # simulate today as entry
@@ -334,6 +334,11 @@ summary = qc.summarize_peer_paths(path_df)
 stats = qc.peer_stats_at_horizon(path_df, fwd_days)
 trigger_tbl = qc.peer_trigger_events(usable, peer_idx, horizons=(5, 10, 20))
 
+# lookback lamp census (independent of today's peer filter)
+n_green = int((usable["green"] == 1).sum())
+n_yellow = int((usable["yellow"] == 1).sum())
+n_days = int(len(usable))
+
 s1, s2, s3, s4 = st.columns(4)
 s1.metric("同條件觸發次數", f"{stats.get('n', 0)} 次", "見下方事件表")
 s2.metric(
@@ -345,6 +350,99 @@ s3.metric(
     f"{stats['down_rate'] * 100:.1f}%" if stats.get("down_rate") is not None else "—",
 )
 s4.metric(f"觸發後{fwd_days}日中位%", qc.fmt_num(stats.get("median")))
+
+# ---- 一眼結論（系統代為彙整）----
+st.markdown("### 一眼結論（系統自動彙整）")
+gate_label = f"{'✅' if gate1 else '❌'}{'✅' if gate2 else '❌'}{'✅' if gate3 else '❌'}"
+st.info(
+    f"今日關數 **{pass_count}/3**（{gate_label}）。"
+    f"同條件定義＝歷史上也必須是 **{pass_count}/3**，"
+    f"所以表內樣本的三關狀態會與今日相同"
+    + ("——今日紅燈時，歷史事件也會是 ❌❌❌。" if pass_count == 0 else "。")
+    + f" 回溯區間內：綠燈 **{n_green}** 筆／黃燈 **{n_yellow}** 筆／交易日 {n_days}。"
+    + ("（綠燈樣本為 0，無法用 🟢🟢🟢 做同條件對照。）" if n_green == 0 else "")
+)
+
+if stats.get("n", 0) == 0:
+    st.warning("目前沒有足夠的同條件歷史樣本，無法判斷後續走向。")
+else:
+    up_rate = stats.get("up_rate")
+    down_rate = stats.get("down_rate")
+    med = stats.get("median")
+    p25 = float(summary.loc[summary["day"] == min(fwd_days, int(summary["day"].max())), "p25"].iloc[0]) if (
+        not summary.empty and (summary["day"] <= fwd_days).any()
+    ) else None
+    # fallback p25 at nearest day
+    if p25 is None and not summary.empty:
+        near = summary.iloc[(summary["day"] - fwd_days).abs().argsort()[:1]]
+        p25 = float(near["p25"].iloc[0]) if len(near) else None
+
+    if up_rate is not None and med is not None:
+        if up_rate >= 0.6 and med > 0 and (p25 is None or p25 > -5):
+            trend_txt = "歷史同條件後偏向上（上漲率較高、中位為正）"
+            st.success(f"走向判斷：**{trend_txt}**")
+        elif down_rate is not None and down_rate >= 0.6 and med < 0:
+            trend_txt = "歷史同條件後偏向下（下跌率較高、中位為負）"
+            st.error(f"走向判斷：**{trend_txt}**")
+        else:
+            trend_txt = "歷史同條件後偏震盪／方向不明"
+            st.warning(f"走向判斷：**{trend_txt}**")
+    else:
+        trend_txt = "樣本後續資料不足"
+        st.warning(f"走向判斷：**{trend_txt}**")
+
+    # auto then-vs-now aggregate
+    if not trigger_tbl.empty:
+        gap_med = trigger_tbl["乖離%"].median(skipna=True)
+        vol_med = trigger_tbl["量比"].median(skipna=True)
+        close_med = trigger_tbl["觸發收盤"].median(skipna=True)
+        auto_cmp = pd.DataFrame(
+            [
+                {
+                    "項目": "關數／三關",
+                    "歷史同條件中位／典型": f"{pass_count}/3（與今日相同）",
+                    "今日": f"{pass_count}/3 {gate_label}",
+                    "解讀": "同條件本來就鎖同關數，不是漏算綠燈",
+                },
+                {
+                    "項目": "乖離%",
+                    "歷史同條件中位／典型": qc.fmt_num(gap_med),
+                    "今日": qc.fmt_num(ma_gap),
+                    "解讀": (
+                        "今日乖離接近歷史典型"
+                        if pd.notna(gap_med) and abs(ma_gap - float(gap_med)) <= gap_tol
+                        else "今日乖離偏離歷史典型，套用時宜打折"
+                    ),
+                },
+                {
+                    "項目": "量比",
+                    "歷史同條件中位／典型": qc.fmt_num(vol_med),
+                    "今日": qc.fmt_num(vol_ratio),
+                    "解讀": (
+                        "量能接近歷史典型"
+                        if pd.notna(vol_med) and pd.notna(vol_ratio) and abs(float(vol_ratio) - float(vol_med)) <= 0.3
+                        else "量能與歷史典型差距較大"
+                    ),
+                },
+                {
+                    "項目": f"後{fwd_days}日報酬",
+                    "歷史同條件中位／典型": f"中位 {qc.fmt_num(med)}%｜漲率 {(up_rate or 0)*100:.0f}%｜跌率 {(down_rate or 0)*100:.0f}%",
+                    "今日": "尚未走完",
+                    "解讀": trend_txt,
+                },
+                {
+                    "項目": "收盤價水準",
+                    "歷史同條件中位／典型": qc.fmt_num(close_med),
+                    "今日": qc.fmt_num(close_v),
+                    "解讀": "價格絕對值僅供定位，主要看乖離／量比／後續％",
+                },
+            ]
+        )
+        st.dataframe(auto_cmp, hide_index=True, use_container_width=True)
+        st.caption(
+            "讀法：先看「走向判斷」→ 再看乖離／量比是否接近歷史典型 → "
+            "需要細節時才下拉選單筆事件。不必把全部事件逐筆對完。"
+        )
 
 # chart: peers band + optional actuals
 chart_df = None
