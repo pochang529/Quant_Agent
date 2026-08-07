@@ -335,7 +335,7 @@ stats = qc.peer_stats_at_horizon(path_df, fwd_days)
 trigger_tbl = qc.peer_trigger_events(usable, peer_idx, horizons=(5, 10, 20))
 
 s1, s2, s3, s4 = st.columns(4)
-s1.metric("同條件觸發次數", f"{stats.get('n', 0)} 次")
+s1.metric("同條件觸發次數", f"{stats.get('n', 0)} 次", "見下方事件表")
 s2.metric(
     f"觸發後{fwd_days}日上漲率",
     f"{stats['up_rate'] * 100:.1f}%" if stats.get("up_rate") is not None else "—",
@@ -362,6 +362,118 @@ for p in open_pos:
     if not ap.empty:
         overlay_cols[f"實際 {p['id']}({p['entry_date']})"] = ap.set_index("day")["ret_pct"]
 
+st.markdown("### 歷史觸發事件表（對應上方次數）")
+if trigger_tbl.empty:
+    st.caption("無觸發樣本。")
+    selected_event = None
+else:
+    event_tbl = trigger_tbl.reset_index(drop=True).copy()
+    event_tbl.insert(0, "序號", np.arange(1, len(event_tbl) + 1))
+    col_ret = f"後{fwd_days}日%"
+    if col_ret in event_tbl.columns:
+        valid = event_tbl[col_ret].dropna()
+        up_n = int((valid > 0).sum())
+        down_n = int((valid < 0).sum())
+        flat_n = int((valid == 0).sum())
+        st.write(
+            f"共 **{len(event_tbl)}** 筆＝上方「{stats.get('n', 0)} 次」。"
+            f"以 **後{fwd_days}日** 計：漲 **{up_n}**／跌 **{down_n}**／平 **{flat_n}**"
+        )
+    st.dataframe(event_tbl, hide_index=True, use_container_width=True)
+    st.caption("每一列＝歷史上一次與今日條件吻合的觸發；可在下方選一筆與今日對照。")
+
+    labels = [
+        f"#{int(r['序號'])}｜{r['觸發日']}｜收{r['觸發收盤']}｜乖離{r['乖離%']}%｜量比{r['量比']}"
+        for _, r in event_tbl.iterrows()
+    ]
+    pick = st.selectbox(
+        "選擇觸發事件（對照今日數值差異）",
+        options=labels,
+        index=0,
+        help="選取後顯示當時條件與今日差異",
+    )
+    selected_event = event_tbl.iloc[labels.index(pick)]
+
+    # overlay selected historical path
+    sel_date = pd.Timestamp(selected_event["觸發日"]).normalize()
+    pos_matches = np.flatnonzero(
+        pd.to_datetime(usable["date"]).dt.normalize().to_numpy() == sel_date.to_datetime64()
+    )
+    if len(pos_matches):
+        sel_pos = int(pos_matches[0])
+        single_path = qc.peer_forward_paths(usable, np.array([sel_pos]), horizon=peer_horizon)
+        if not single_path.empty:
+            overlay_cols[f"選中 #{int(selected_event['序號'])}({selected_event['觸發日']})"] = (
+                single_path.set_index("day")["ret_pct"]
+            )
+
+    st.markdown("#### 選中事件 × 今日對照")
+    def _cell(v):
+        if v is None or (isinstance(v, float) and (np.isnan(v) if isinstance(v, float) else False)):
+            return "—"
+        try:
+            if pd.isna(v):
+                return "—"
+        except Exception:
+            pass
+        return str(v)
+
+    gap_then = selected_event["乖離%"]
+    vol_then = selected_event["量比"]
+    compare_rows = [
+        {
+            "項目": "觸發日／基準日",
+            "當時觸發": _cell(selected_event["觸發日"]),
+            "今日現況": latest["date"].strftime("%Y-%m-%d"),
+            "差異": "—",
+        },
+        {
+            "項目": "收盤",
+            "當時觸發": _cell(selected_event["觸發收盤"]),
+            "今日現況": _cell(round(close_v, 2)),
+            "差異": _cell(round(close_v - float(selected_event["觸發收盤"]), 2)),
+        },
+        {
+            "項目": "關數",
+            "當時觸發": f"{int(selected_event['關數'])}/3",
+            "今日現況": f"{pass_count}/3",
+            "差異": _cell(pass_count - int(selected_event["關數"])),
+        },
+        {
+            "項目": "G1／G2／G3",
+            "當時觸發": f"{selected_event['G1']}{selected_event['G2']}{selected_event['G3']}",
+            "今日現況": f"{'✅' if gate1 else '❌'}{'✅' if gate2 else '❌'}{'✅' if gate3 else '❌'}",
+            "差異": "—",
+        },
+        {
+            "項目": "乖離%",
+            "當時觸發": _cell(gap_then),
+            "今日現況": _cell(round(ma_gap, 2)),
+            "差異": _cell(round(ma_gap - float(gap_then), 2)) if gap_then is not None else "—",
+        },
+        {
+            "項目": "量比",
+            "當時觸發": _cell(vol_then),
+            "今日現況": _cell(round(vol_ratio, 2) if pd.notna(vol_ratio) else None),
+            "差異": _cell(round(float(vol_ratio) - float(vol_then), 2))
+            if vol_then is not None and pd.notna(vol_ratio)
+            else "—",
+        },
+        {
+            "項目": "醞釀",
+            "當時觸發": _cell(selected_event.get("醞釀") or "—"),
+            "今日現況": "Y" if int(latest["brewing"]) == 1 else "—",
+            "差異": "—",
+        },
+        {
+            "項目": f"後{fwd_days}日%",
+            "當時觸發": _cell(selected_event.get(col_ret)),
+            "今日現況": "尚未發生",
+            "差異": "—",
+        },
+    ]
+    st.dataframe(pd.DataFrame(compare_rows), hide_index=True, use_container_width=True)
+
 if chart_df is not None:
     plot = chart_df.copy()
     for name, ser in overlay_cols.items():
@@ -369,28 +481,10 @@ if chart_df is not None:
     st.line_chart(plot)
     st.caption(
         "路徑＝歷史每次「同條件觸發」後的報酬分布（相對觸發日收盤）。"
-        "縱軸％｜橫軸＝觸發後第 N 個交易日。可與實際持倉曲線對照。"
+        "縱軸％｜橫軸＝觸發後第 N 個交易日。可與實際持倉／選中事件曲線對照。"
     )
 else:
     st.info("同條件歷史樣本不足，無法畫路徑。可放寬乖離容差或拉長回溯年數。")
-
-st.markdown("### 歷史觸發明細（當下數值 → 後續漲跌）")
-if trigger_tbl.empty:
-    st.caption("無觸發樣本。")
-else:
-    # 漲跌計數（以觀察天數欄為準）
-    col_ret = f"後{fwd_days}日%"
-    if col_ret in trigger_tbl.columns:
-        valid = trigger_tbl[col_ret].dropna()
-        up_n = int((valid > 0).sum())
-        down_n = int((valid < 0).sum())
-        flat_n = int((valid == 0).sum())
-        st.write(
-            f"以 **後{fwd_days}日** 計：漲 **{up_n}**／跌 **{down_n}**／平 **{flat_n}**"
-            f"（共 {len(valid)} 筆有完整後續）"
-        )
-    st.dataframe(trigger_tbl.head(40), hide_index=True, use_container_width=True)
-    st.caption("表中每一列＝歷史上一次與「今日條件吻合」的觸發；G1/G2/G3 為當日三關，後N日％為觸發後漲跌。")
 
 # 今日條件快照（方便對照表內觸發值）
 st.markdown("### 今日觸發基準（用來匹配上表）")
