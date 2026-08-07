@@ -97,6 +97,17 @@ def build_panel(df_price, df_inst, df_margin):
         axis=1,
     ).max(axis=1)
     price["ATR14"] = tr.rolling(14).mean()
+    # Zone positioning (separate from entry gates)
+    price["px_pct60"] = price["close"].rolling(60).apply(
+        lambda s: float(pd.Series(s).rank(pct=True).iloc[-1] * 100), raw=False
+    )
+    price["px_pct120"] = price["close"].rolling(120).apply(
+        lambda s: float(pd.Series(s).rank(pct=True).iloc[-1] * 100), raw=False
+    )
+    price["high60"] = price["close"].rolling(60).max()
+    price["low60"] = price["close"].rolling(60).min()
+    price["dist_high60_pct"] = (price["close"] / price["high60"] - 1) * 100
+    price["dist_low60_pct"] = (price["close"] / price["low60"] - 1) * 100
 
     inst = df_inst.copy()
     inst["date"] = pd.to_datetime(inst["date"])
@@ -153,6 +164,100 @@ def build_panel(df_price, df_inst, df_margin):
     panel["exit_red"] = (panel["x_pass"] == 3).astype(int)
     panel["exit_yellow"] = (panel["x_pass"] == 2).astype(int)
     return panel
+
+
+def classify_zone_percentile(pct: float | None) -> tuple[str, str]:
+    """Hard thresholds for 60/120d close percentile. Returns (label, rule)."""
+    if pct is None or (isinstance(pct, float) and np.isnan(pct)):
+        return "資料不足", "需滿窗口交易日"
+    if pct < 20:
+        return "區段偏低", "分位 < 20"
+    if pct > 80:
+        return "區段偏高", "分位 > 80"
+    return "區段中性", "分位 20～80"
+
+
+def classify_ma_gap_band(gap: float | None) -> tuple[str, str]:
+    """Hard thresholds vs 20MA gap %. Returns (label, rule)."""
+    if gap is None or (isinstance(gap, float) and np.isnan(gap)):
+        return "資料不足", "無 20MA"
+    if gap <= -10:
+        return "深低於月線", "乖離 ≤ -10%"
+    if gap < 0:
+        return "月線下方", "-10% < 乖離 < 0"
+    if gap <= 10:
+        return "月線上方", "0 ≤ 乖離 ≤ 10%"
+    return "遠高於月線", "乖離 > 10%"
+
+
+def position_context(row: pd.Series, pass_count: int) -> dict:
+    """
+    Zone high/low context — independent from entry green light.
+    Absolute rules only; no buy/sell advice.
+    """
+    pct60 = float(row["px_pct60"]) if "px_pct60" in row and pd.notna(row["px_pct60"]) else None
+    pct120 = float(row["px_pct120"]) if "px_pct120" in row and pd.notna(row["px_pct120"]) else None
+    gap = float(row["ma_gap_pct"]) if pd.notna(row.get("ma_gap_pct")) else None
+    dist_hi = float(row["dist_high60_pct"]) if "dist_high60_pct" in row and pd.notna(row["dist_high60_pct"]) else None
+    dist_lo = float(row["dist_low60_pct"]) if "dist_low60_pct" in row and pd.notna(row["dist_low60_pct"]) else None
+
+    zone60, zone60_rule = classify_zone_percentile(pct60)
+    zone120, zone120_rule = classify_zone_percentile(pct120)
+    gap_band, gap_rule = classify_ma_gap_band(gap)
+
+    # Primary zone uses 60d; 120d is secondary confirm
+    primary = zone60
+    if zone60 == "區段偏低" and zone120 == "區段偏低":
+        primary = "區段偏低（短長窗一致）"
+    elif zone60 == "區段偏高" and zone120 == "區段偏高":
+        primary = "區段偏高（短長窗一致）"
+    elif zone60.startswith("區段") and zone120.startswith("區段") and zone60 != zone120 and zone120 != "資料不足":
+        primary = f"{zone60}（長窗{zone120.replace('區段', '')}）"
+
+    # Structure lamp (entry) vs location — fixed dictionary, no soft language
+    if pass_count == 3:
+        struct = "進場綠燈（結構已確認）"
+    elif pass_count == 2:
+        struct = "進場黃燈（結構未確認）"
+    else:
+        struct = "進場紅燈（結構未確認）"
+
+    lowish = "偏低" in primary
+    highish = "偏高" in primary
+    below_ma = gap is not None and gap < 0
+    above_ma = gap is not None and gap >= 0
+
+    if pass_count < 3 and lowish and below_ma:
+        combo = "低檔＋未確認＝只作觀察錨點，不是進場參考"
+    elif pass_count < 3 and highish:
+        combo = "偏高＋未確認＝不具進場參考，也非低檔敘事"
+    elif pass_count == 3 and highish:
+        combo = "結構確認發生在區段偏高＝確認偏中後段，不是谷底訊號"
+    elif pass_count == 3 and lowish:
+        combo = "結構確認且區段仍偏低＝確認偏早段（少見，以分位為準）"
+    elif pass_count == 3 and above_ma:
+        combo = "結構確認＋月線上＝趨勢確認態，高低另看分位"
+    elif pass_count < 3 and above_ma and not highish:
+        combo = "月線附近但關數未齊＝尚未進入進場參考"
+    else:
+        combo = "結構與高低分列判讀：綠燈≠低點，低點≠綠燈"
+
+    return {
+        "pct60": pct60,
+        "pct120": pct120,
+        "zone60": zone60,
+        "zone60_rule": zone60_rule,
+        "zone120": zone120,
+        "zone120_rule": zone120_rule,
+        "primary_zone": primary,
+        "gap": gap,
+        "gap_band": gap_band,
+        "gap_rule": gap_rule,
+        "dist_high60_pct": dist_hi,
+        "dist_low60_pct": dist_lo,
+        "struct": struct,
+        "combo": combo,
+    }
 
 
 def load_stock_bundle(sid, start_date, end_date, token):

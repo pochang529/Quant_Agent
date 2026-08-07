@@ -95,7 +95,7 @@ stock_id = st.segmented_control(
 
 
 @st.cache_data(ttl=3600)
-def cached_bundle(sid, start, end, token):
+def cached_bundle(sid, start, end, token, _schema="pos_v1"):
     return qc.load_stock_bundle(sid, start, end, token)
 
 
@@ -178,6 +178,65 @@ else:
     st.error("🔴 **紅燈：條件未齊。**")
 if int(latest["brewing"]) == 1 and not gate3:
     st.info("⏳ 達標前預警：第三關醞釀中（門檻未放寬）")
+
+# ===== 區段高低定位（與進場燈分離）=====
+st.markdown("## 區段高低定位（與進場燈分開）")
+st.caption(
+    "規則寫死、不模稜兩可。進場燈只答「結構是否確認」；本區只答「現在偏高還偏低」。"
+    "兩者禁止互相替代：低點 ≠ 綠燈，綠燈 ≠ 低點。"
+)
+pos = qc.position_context(latest, pass_count)
+p1, p2, p3, p4 = st.columns(4)
+p1.metric(
+    "60日收盤分位",
+    f"{qc.fmt_num(pos['pct60'], 1)}%" if pos["pct60"] is not None else "—",
+    pos["zone60"],
+)
+p2.metric(
+    "120日收盤分位",
+    f"{qc.fmt_num(pos['pct120'], 1)}%" if pos["pct120"] is not None else "—",
+    pos["zone120"],
+)
+p3.metric("對月線乖離帶", pos["gap_band"], f"{qc.fmt_num(pos['gap'])}%｜{pos['gap_rule']}")
+p4.metric(
+    "距60日高／低",
+    f"{qc.fmt_num(pos['dist_high60_pct'])}% / +{qc.fmt_num(pos['dist_low60_pct'])}%",
+    "相對60日高點／低點",
+)
+
+rule_tbl = pd.DataFrame(
+    [
+        {"指標": "60日分位", "門檻（寫死）": "<20 偏低｜20～80 中性｜>80 偏高", "今日": f"{qc.fmt_num(pos['pct60'], 1)}% → {pos['zone60']}"},
+        {"指標": "120日分位", "門檻（寫死）": "<20 偏低｜20～80 中性｜>80 偏高", "今日": f"{qc.fmt_num(pos['pct120'], 1)}% → {pos['zone120']}"},
+        {"指標": "20MA乖離", "門檻（寫死）": "≤-10 深低｜-10~0 月下｜0~10 月上｜>10 遠高", "今日": f"{qc.fmt_num(pos['gap'])}% → {pos['gap_band']}"},
+        {"指標": "主定位", "門檻（寫死）": "以60日為主，120日作一致／分歧註記", "今日": pos["primary_zone"]},
+    ]
+)
+st.dataframe(rule_tbl, hide_index=True, use_container_width=True)
+
+split_tbl = pd.DataFrame(
+    [
+        {"維度": "進場結構燈", "今日判定": pos["struct"], "答什麼": "三關是否確認（可當進場參考與否）"},
+        {"維度": "區段高低位", "今日判定": pos["primary_zone"], "答什麼": "60/120日分位落在低／中／高哪一格"},
+        {"維度": "月線位置帶", "今日判定": pos["gap_band"], "答什麼": "價格相對20MA的固定帶位"},
+        {"維度": "合成讀法（非買賣建議）", "今日判定": pos["combo"], "答什麼": "兩維交叉後的唯一敘述，避免自行腦補"},
+    ]
+)
+st.dataframe(split_tbl, hide_index=True, use_container_width=True)
+
+# Force a single unambiguous banner
+if pass_count < 3 and "偏低" in pos["primary_zone"]:
+    st.warning(
+        f"定位結論：**{pos['primary_zone']}** ＋ **{pos['struct']}** → {pos['combo']}"
+    )
+elif pass_count == 3 and "偏高" in pos["primary_zone"]:
+    st.info(
+        f"定位結論：**{pos['primary_zone']}** ＋ **{pos['struct']}** → {pos['combo']}"
+    )
+else:
+    st.success(
+        f"定位結論：**{pos['primary_zone']}** ＋ **{pos['struct']}** → {pos['combo']}"
+    )
 
 st.markdown("### 進場｜數據對映")
 g1, g2, g3 = st.columns(3)
@@ -707,12 +766,17 @@ with st.spinner("掃描自選…"):
         entry_label = "綠" if pc == 3 else ("黃" if pc == 2 else "紅")
         if pc == 3 and (dstat["active"] or market_weak):
             entry_label = "僅觀察"
+        pz = qc.position_context(L, pc)
         scan_rows.append(
             {
                 "代號": code,
                 "收盤": round(float(L["close"]), 2),
                 "進場燈": entry_label,
                 "進場關": pc,
+                "區段定位": pz["primary_zone"],
+                "60日分位": round(pz["pct60"], 1) if pz["pct60"] is not None else None,
+                "月線帶": pz["gap_band"],
+                "合成讀法": pz["combo"],
                 "醞釀": "Y" if int(L["brewing"]) == 1 else "",
                 "離場燈": "離場紅" if xp == 3 else ("離場黃" if xp == 2 else "OK"),
                 "離場關": xp,
