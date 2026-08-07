@@ -110,7 +110,7 @@ def main():
     push = load_push_config()
     start, end = qc.date_range(args.years)
 
-    codes = qc.load_watchlist_file()
+    codes = qc.load_watchlist_durable()
     for p in qc.load_positions():
         if p.get("status", "open") == "open":
             sid = p.get("stock_id")
@@ -120,6 +120,7 @@ def main():
     if not codes:
         print("ERROR: watchlist 與持倉皆空")
         sys.exit(1)
+    print(f"WATCHLIST: {', '.join(codes)}")
 
     mkt = qc.load_stock_bundle("0050", start, end, token)
     market_weak = False

@@ -14,8 +14,22 @@ st.set_page_config(page_title="台股客觀數據審核面板", layout="wide")
 # --- 側邊欄 ---
 st.sidebar.header("系統參數設定")
 
+def _github_cfg_from_secrets() -> dict:
+    try:
+        return {
+            "token": st.secrets.get("GITHUB_TOKEN", "") or "",
+            "repo": st.secrets.get("GITHUB_REPO", "") or "",
+            "branch": st.secrets.get("WATCHLIST_BRANCH", "") or "",
+            "path": st.secrets.get("WATCHLIST_GITHUB_PATH", "") or "",
+        }
+    except Exception:
+        return {}
+
+
+github_cfg = qc.load_github_config(_github_cfg_from_secrets())
+
 if "watchlist_editor" not in st.session_state:
-    saved_watchlist = qc.load_watchlist_file()
+    saved_watchlist = qc.load_watchlist_durable(github_cfg)
     st.session_state.watchlist_editor = "\n".join(saved_watchlist or ["6217"])
 
 candidate_code = st.sidebar.text_input(
@@ -38,7 +52,7 @@ watchlist_raw = st.sidebar.text_area(
     "自選清單（多檔，每行一個代號）",
     key="watchlist_editor",
     height=140,
-    help="可直接增刪代號；按下方按鈕後會寫入 data/watchlist.txt，重開時自動載入",
+    help="按儲存後寫入永久庫（GitHub persistent-data）；除非手動刪除，否則隔日／重開仍保留",
 )
 watchlist_codes = qc.parse_watchlist(watchlist_raw)
 if not watchlist_codes:
@@ -47,9 +61,12 @@ if st.session_state.get("active_stock") not in watchlist_codes:
     st.session_state.active_stock = watchlist_codes[0]
 st.sidebar.caption(f"目前候選：{len(watchlist_codes)} 檔")
 if st.sidebar.button("💾 儲存自選清單", type="primary", use_container_width=True):
-    qc.save_watchlist_file(watchlist_codes)
-    st.sidebar.success(f"已儲存 {len(watchlist_codes)} 檔，定時推播將使用此清單")
-
+    ok, info = qc.save_watchlist_durable(watchlist_codes, cfg=github_cfg)
+    if ok:
+        st.sidebar.success(info)
+    else:
+        st.sidebar.error(info)
+st.sidebar.caption("永久儲存：GitHub `persistent-data` 分支（不隨 Cloud 重啟消失）")
 lookback_years = st.sidebar.selectbox("歷史驗證回溯年數", options=[1, 2, 3], index=0)
 fwd_days = st.sidebar.selectbox("綠燈／離場／對照觀察天數", options=[5, 10, 20], index=1)
 brew_window = st.sidebar.selectbox("醞釀→綠燈觀察窗（交易日）", options=[5, 10, 20], index=1)

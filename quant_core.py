@@ -1,7 +1,9 @@
 """Shared Quant_Agent logic: data, gates, peers, positions, alerts."""
 from __future__ import annotations
 
+import base64
 import json
+import os
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -15,6 +17,11 @@ DATA_DIR = ROOT / "data"
 POSITIONS_PATH = DATA_DIR / "positions.json"
 STATE_PATH = DATA_DIR / "notify_state.json"
 WATCHLIST_PATH = DATA_DIR / "watchlist.txt"
+DEFAULT_WATCHLIST = ["6217"]
+# Separate branch so Streamlit Cloud (tracking main) does not redeploy on every save.
+WATCHLIST_GITHUB_BRANCH = "persistent-data"
+WATCHLIST_GITHUB_PATH = "data/watchlist.txt"
+DEFAULT_GITHUB_REPO = "pochang529/Quant_Agent"
 
 
 def fmt_num(x, digits=2):
@@ -609,27 +616,179 @@ def save_notify_state(state: dict):
 
 def parse_watchlist(text: str) -> list[str]:
     codes = []
-    for line in text.replace(",", "\n").splitlines():
-        code = line.strip()
+    for line in text.replace("\ufeff", "").replace(",", "\n").splitlines():
+        code = line.strip().lstrip("\ufeff")
         if code and not code.startswith("#") and code not in codes:
             codes.append(code)
     return codes
 
 
-def save_watchlist_file(codes: list[str]):
-    _ensure_data_dir()
+def _read_secrets_map() -> dict[str, str]:
+    secrets = ROOT / ".streamlit" / "secrets.toml"
+    out: dict[str, str] = {}
+    if not secrets.exists():
+        return out
+    for line in secrets.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        out[key.strip()] = value.strip().strip('"').strip("'")
+    return out
+
+
+def load_github_config(overrides: dict | None = None) -> dict:
+    secrets = _read_secrets_map()
+    cfg = {
+        "token": os.environ.get("GITHUB_TOKEN", "") or secrets.get("GITHUB_TOKEN", ""),
+        "repo": os.environ.get("GITHUB_REPO", "")
+        or secrets.get("GITHUB_REPO", "")
+        or DEFAULT_GITHUB_REPO,
+        "branch": os.environ.get("WATCHLIST_BRANCH", "")
+        or secrets.get("WATCHLIST_BRANCH", "")
+        or WATCHLIST_GITHUB_BRANCH,
+        "path": os.environ.get("WATCHLIST_PATH", "")
+        or secrets.get("WATCHLIST_GITHUB_PATH", "")
+        or WATCHLIST_GITHUB_PATH,
+    }
+    if overrides:
+        for key, value in overrides.items():
+            if value:
+                cfg[key] = value
+    return cfg
+
+
+def _watchlist_text(codes: list[str]) -> str:
     normalized = parse_watchlist("\n".join(codes))
-    WATCHLIST_PATH.write_text(
-        "\n".join(normalized) + ("\n" if normalized else ""),
-        encoding="utf-8",
-    )
+    return "\n".join(normalized) + ("\n" if normalized else "")
+
+
+def save_watchlist_file(codes: list[str]):
+    """Local cache only. Streamlit Cloud disk is ephemeral — use save_watchlist_durable."""
+    _ensure_data_dir()
+    WATCHLIST_PATH.write_text(_watchlist_text(codes), encoding="utf-8")
 
 
 def load_watchlist_file() -> list[str]:
+    """Compatibility wrapper: durable load (GitHub SSOT → local → default)."""
+    return load_watchlist_durable()
+
+
+def fetch_watchlist_from_github(cfg: dict | None = None) -> list[str]:
+    cfg = cfg or load_github_config()
+    repo = cfg.get("repo") or DEFAULT_GITHUB_REPO
+    branch = cfg.get("branch") or WATCHLIST_GITHUB_BRANCH
+    path = cfg.get("path") or WATCHLIST_GITHUB_PATH
+    token = cfg.get("token") or ""
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    # Prefer Contents API (works for public repos without token; private needs token).
+    api = f"https://api.github.com/repos/{repo}/contents/{path}"
+    try:
+        resp = requests.get(api, headers=headers, params={"ref": branch}, timeout=30)
+        if resp.status_code == 200:
+            payload = resp.json()
+            raw = base64.b64decode(payload.get("content", "")).decode("utf-8")
+            codes = parse_watchlist(raw)
+            if codes:
+                return codes
+    except Exception:
+        pass
+
+    raw_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{path}"
+    try:
+        resp = requests.get(raw_url, headers=headers, timeout=30)
+        if resp.status_code == 200 and resp.text.strip():
+            return parse_watchlist(resp.text)
+    except Exception:
+        pass
+    return []
+
+
+def push_watchlist_to_github(codes: list[str], cfg: dict | None = None) -> tuple[bool, str]:
+    cfg = cfg or load_github_config()
+    token = cfg.get("token") or ""
+    if not token:
+        return False, "缺少 GITHUB_TOKEN，無法永久寫入"
+    repo = cfg.get("repo") or DEFAULT_GITHUB_REPO
+    branch = cfg.get("branch") or WATCHLIST_GITHUB_BRANCH
+    path = cfg.get("path") or WATCHLIST_GITHUB_PATH
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    api = f"https://api.github.com/repos/{repo}/contents/{path}"
+    sha = None
+    try:
+        existing = requests.get(api, headers=headers, params={"ref": branch}, timeout=30)
+        if existing.status_code == 200:
+            sha = existing.json().get("sha")
+        elif existing.status_code not in (404, 200):
+            # Branch may not exist yet; continue and let PUT create via branch param.
+            pass
+    except Exception as exc:
+        return False, f"讀取遠端清單失敗：{exc}"
+
+    content = base64.b64encode(_watchlist_text(codes).encode("utf-8")).decode("ascii")
+    payload = {
+        "message": "chore: persist watchlist",
+        "content": content,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+    try:
+        resp = requests.put(api, headers=headers, json=payload, timeout=30)
+        if resp.status_code in (200, 201):
+            return True, f"已永久寫入 {repo}@{branch}"
+        return False, f"GitHub 寫入失敗 HTTP {resp.status_code}: {resp.text[:240]}"
+    except Exception as exc:
+        return False, f"GitHub 寫入例外：{exc}"
+
+
+def load_watchlist_durable(cfg: dict | None = None) -> list[str]:
+    """
+    Permanent source of truth:
+    1) GitHub persistent-data branch (survives Streamlit Cloud restarts)
+    2) local data/watchlist.txt (local/dev cache)
+    3) default 6217
+    """
+    cfg = cfg or load_github_config()
+    remote = fetch_watchlist_from_github(cfg)
+    if remote:
+        save_watchlist_file(remote)  # refresh local cache
+        return remote
+
     _ensure_data_dir()
-    if not WATCHLIST_PATH.exists():
-        WATCHLIST_PATH.write_text("6217\n", encoding="utf-8")
-    return parse_watchlist(WATCHLIST_PATH.read_text(encoding="utf-8"))
+    if WATCHLIST_PATH.exists():
+        local = parse_watchlist(WATCHLIST_PATH.read_text(encoding="utf-8"))
+        if local:
+            return local
+
+    save_watchlist_file(DEFAULT_WATCHLIST)
+    return list(DEFAULT_WATCHLIST)
+
+
+def save_watchlist_durable(codes: list[str], cfg: dict | None = None) -> tuple[bool, str]:
+    """Save local cache + durable GitHub copy. Permanent until user removes codes."""
+    normalized = parse_watchlist("\n".join(codes))
+    if not normalized:
+        normalized = list(DEFAULT_WATCHLIST)
+    save_watchlist_file(normalized)
+    ok, info = push_watchlist_to_github(normalized, cfg=cfg)
+    if ok:
+        return True, f"已永久儲存 {len(normalized)} 檔（{info}）"
+    # Local-only fallback: warn clearly so Cloud overnight loss is visible.
+    return False, (
+        f"本機已暫存 {len(normalized)} 檔，但尚未永久化：{info}。"
+        "請在 Streamlit secrets / 環境變數加入 GITHUB_TOKEN（repo Contents 寫入權限）。"
+    )
 
 
 def is_tw_trading_day(now: datetime | None = None) -> bool:
